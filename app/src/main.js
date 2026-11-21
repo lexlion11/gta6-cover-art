@@ -1,355 +1,427 @@
-// main.js — wires the VICE GRID editor: load photos from your own machine,
-// fill the panel grid, position and zoom each panel's photo, type the caption,
-// tune the look, and export the cover as a PNG. A ?shot= query instead sets up
-// a fixed scene for a screenshot (./shots.js).
+// Cover Snap — GTA-style cover art maker.
+// Draws a Vice City sunset scene on canvas: teal-to-orange gradient sky, retro
+// sun, palm silhouettes, neon skyline, a grid of white-bordered photo panels,
+// bold uppercase caption lettering, then a split-tone grade, scanlines and a
+// vignette on top. ES module; no network, no dependencies.
 
-import { drawCover, panelGrid } from './cover.js';
-import { runShot } from './shots.js';
-
-export const SIZES = [
-  { name: 'Square', w: 1080, h: 1080 },
-  { name: 'Portrait', w: 1080, h: 1350 },
-  { name: 'Landscape', w: 1920, h: 1080 },
-];
-
-const state = {
-  sizeIndex: 0,
-  caption: 'SUNSET HEIST',
-  panels: [],
-  photos: [],
-  selected: 0,
-  lastPhoto: -1,
-  style: { grain: 0.6, grade: 0.7, scan: 0.5 },
-};
+const SAMPLES = ['./samples/boulevard.jpg', './samples/pier.jpg'];
 
 const canvas = document.getElementById('cover');
-const captionInput = document.getElementById('caption');
-const status = document.getElementById('status');
-const photoInput = document.getElementById('photo');
-const photoList = document.getElementById('photo-list');
-const panelChips = document.getElementById('panel-chips');
-const zoomInput = document.getElementById('zoom');
-const zoomLabel = document.getElementById('zoom-label');
-const sizeBar = document.getElementById('size-bar');
-const exportButton = document.getElementById('export');
+const ctx = canvas.getContext('2d');
 
-function size() {
-  return SIZES[state.sizeIndex];
+const state = {
+  photos: [],       // HTMLImageElement / canvas-backed draws
+  caption: 'VICE CITY',
+  w: 1080,
+  h: 1080,
+};
+
+// ---------------------------------------------------------------------------
+// URL shot params
+// ---------------------------------------------------------------------------
+const params = new URLSearchParams(location.search);
+const shot = params.get('shot');
+const shotCaption = params.get('caption');
+const shotPhoto = params.get('photo'); // 'boulevard' | 'pier' | index
+
+const SHOTS = new Set(['cover', 'editor', 'square', 'portrait']);
+
+function applyShotMode() {
+  if (!SHOTS.has(shot)) return;
+  document.body.classList.add(`shot-${shot}`);
+  if (shot === 'square') { state.w = 1080; state.h = 1080; }
+  if (shot === 'portrait') { state.w = 1080; state.h = 1350; }
+  if (shot === 'cover') { state.w = 1080; state.h = 1080; }
+  if (shotCaption != null) state.caption = shotCaption;
 }
 
-function initPanels(carry) {
-  const next = panelGrid(size().w, size().h).count;
-  const panels = [];
-  for (let i = 0; i < next; i++) {
-    const prev = carry ? carry[i] : null;
-    panels.push(prev ? { ...prev } : { img: null, zoom: 1, ox: 0, oy: 0 });
-  }
-  state.panels = panels;
-  if (state.selected >= next) state.selected = 0;
-}
-
-/** Loads an image from a URL, resolving once it can be drawn. */
-export function loadImage(url) {
-  return new Promise((resolve, reject) => {
+// ---------------------------------------------------------------------------
+// Image loading
+// ---------------------------------------------------------------------------
+function loadImage(src) {
+  return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => resolve(img);
-    img.onerror = () => reject(new Error(`could not load ${url}`));
-    img.src = url;
+    img.onerror = () => resolve(null);
+    img.src = src;
   });
 }
 
-function render() {
-  const s = size();
-  canvas.width = s.w;
-  canvas.height = s.h;
-  canvas.style.aspectRatio = `${s.w} / ${s.h}`;
-  drawCover(canvas, state);
-  renderPanelChips();
-  renderPhotoList();
-  const panel = state.panels[state.selected];
-  zoomInput.value = String(Math.round((panel ? panel.zoom : 1) * 100));
-  zoomLabel.textContent = `${Math.round((panel ? panel.zoom : 1) * 100)}%`;
-}
-
-function renderPanelChips() {
-  panelChips.innerHTML = '';
-  state.panels.forEach((panel, i) => {
-    const chip = document.createElement('button');
-    chip.type = 'button';
-    chip.className = `chip panel-chip${i === state.selected ? ' on' : ''}${panel.img ? ' filled' : ''}`;
-    chip.textContent = String(i + 1);
-    chip.title = panel.img ? `Panel ${i + 1}` : `Panel ${i + 1} (empty)`;
-    chip.addEventListener('click', () => {
-      state.selected = i;
-      render();
-    });
-    panelChips.appendChild(chip);
-  });
-}
-
-function renderPhotoList() {
-  photoList.innerHTML = '';
-  state.photos.forEach((photo, i) => {
-    const item = document.createElement('button');
-    item.type = 'button';
-    item.className = `chip photo-chip${i === state.lastPhoto ? ' on' : ''}`;
-    const thumb = document.createElement('img');
-    thumb.src = photo.url;
-    thumb.alt = '';
-    const label = document.createElement('span');
-    label.textContent = photo.name;
-    item.append(thumb, label);
-    item.addEventListener('click', () => {
-      state.lastPhoto = i;
-      assignPhoto(i);
-    });
-    photoList.appendChild(item);
-  });
-  const fill = document.getElementById('fill-all');
-  fill.disabled = state.lastPhoto < 0;
-}
-
-function assignPhoto(photoIndex) {
-  const photo = state.photos[photoIndex];
-  if (!photo) return;
-  const panel = state.panels[state.selected];
-  if (panel) {
-    panel.img = photo.img;
-    panel.zoom = 1;
-    panel.ox = 0;
-    panel.oy = 0;
+async function loadSamples() {
+  let list = SAMPLES;
+  if (shotPhoto === 'boulevard') list = ['./samples/boulevard.jpg'];
+  else if (shotPhoto === 'pier') list = ['./samples/pier.jpg'];
+  const imgs = (await Promise.all(list.map(loadImage))).filter(Boolean);
+  if (imgs.length) {
+    state.photos = imgs;
+    updatePhotoCount();
+    render();
   }
-  status.textContent = `${photo.name} in panel ${state.selected + 1}`;
-  render();
 }
 
-function fillAllPanels() {
-  const photo = state.photos[state.lastPhoto];
-  if (!photo) return;
-  for (const panel of state.panels) {
-    panel.img = photo.img;
-    panel.zoom = 1;
-    panel.ox = 0;
-    panel.oy = 0;
+function updatePhotoCount() {
+  const el = document.getElementById('photo-count');
+  if (!el) return;
+  el.textContent = state.photos.length
+    ? `${state.photos.length} photo${state.photos.length > 1 ? 's' : ''} loaded.`
+    : 'No photos loaded.';
+}
+
+// ---------------------------------------------------------------------------
+// Scene drawing
+// ---------------------------------------------------------------------------
+function drawBackground(c, w, h) {
+  // Vice City sunset: deep teal sky bleeding into orange/pink at the horizon.
+  const sky = c.createLinearGradient(0, 0, 0, h * 0.78);
+  sky.addColorStop(0.00, '#04202b');
+  sky.addColorStop(0.35, '#0e5a63');
+  sky.addColorStop(0.62, '#e86a3c');
+  sky.addColorStop(0.80, '#ff9d4d');
+  sky.addColorStop(1.00, '#ffd28a');
+  c.fillStyle = sky;
+  c.fillRect(0, 0, w, h);
+
+  // Retro sun with horizontal slice gaps.
+  const sx = w * 0.5, sy = h * 0.46, r = Math.min(w, h) * 0.19;
+  const sun = c.createLinearGradient(0, sy - r, 0, sy + r);
+  sun.addColorStop(0, '#fff3b0');
+  sun.addColorStop(0.5, '#ffd23f');
+  sun.addColorStop(1, '#ff7a3d');
+  c.save();
+  c.beginPath();
+  c.arc(sx, sy, r, 0, Math.PI * 2);
+  c.clip();
+  c.fillStyle = sun;
+  c.fillRect(sx - r, sy - r, r * 2, r * 2);
+  // slices cut from the bottom half, GTA Vice City style
+  c.fillStyle = sky;
+  const slices = 7;
+  for (let i = 0; i < slices; i++) {
+    const t = 0.52 + (i / slices) * 0.48;
+    const y = sy - r + t * r * 2;
+    const sh = (r * 2) * (0.018 + i * 0.012);
+    c.fillRect(sx - r, y, r * 2, sh);
   }
-  status.textContent = `${photo.name} fills every panel`;
-  render();
+  c.restore();
+
+  // sun glow
+  const glow = c.createRadialGradient(sx, sy, r * 0.4, sx, sy, r * 2.4);
+  glow.addColorStop(0, 'rgba(255, 190, 90, 0.35)');
+  glow.addColorStop(1, 'rgba(255, 190, 90, 0)');
+  c.fillStyle = glow;
+  c.fillRect(0, 0, w, h);
 }
 
-async function onPhotosPicked(files) {
-  for (const file of files) {
-    if (!file.type.startsWith('image/')) continue;
-    const url = URL.createObjectURL(file);
-    try {
-      const img = await loadImage(url);
-      state.photos.push({ name: file.name.replace(/\.[^.]+$/, ''), url, img });
-      state.lastPhoto = state.photos.length - 1;
-    } catch {
-      URL.revokeObjectURL(url);
-    }
+function drawPalm(c, x, baseY, scale, color) {
+  // A palm silhouette: curved trunk plus a fan of fronds.
+  c.save();
+  c.translate(x, baseY);
+  c.scale(scale, scale);
+  c.strokeStyle = color;
+  c.fillStyle = color;
+  c.lineWidth = 7;
+  c.lineCap = 'round';
+
+  const trunkH = 150;
+  c.beginPath();
+  c.moveTo(0, 0);
+  c.quadraticCurveTo(-14, -trunkH * 0.55, 4, -trunkH);
+  c.stroke();
+
+  const top = { x: 4, y: -trunkH };
+  const fronds = 7;
+  for (let i = 0; i < fronds; i++) {
+    const a = Math.PI * (0.15 + (i / (fronds - 1)) * 0.7) - Math.PI;
+    const len = 62 + (i % 2) * 14;
+    c.beginPath();
+    c.moveTo(top.x, top.y);
+    c.quadraticCurveTo(
+      top.x + Math.cos(a) * len * 0.55, top.y + Math.sin(a) * len * 0.5 - 8,
+      top.x + Math.cos(a) * len, top.y + Math.sin(a) * len * 0.72 + 10,
+    );
+    c.stroke();
   }
-  if (state.photos.length) {
-    // first photo fills the whole grid, so one pick is enough for a full poster
-    if (state.panels.every((p) => !p.img)) fillAllPanels();
-    else assignPhoto(state.lastPhoto);
-  }
-  render();
+  // small coconuts
+  c.beginPath();
+  c.arc(top.x - 6, top.y + 8, 5, 0, Math.PI * 2);
+  c.arc(top.x + 8, top.y + 10, 5, 0, Math.PI * 2);
+  c.fill();
+  c.restore();
 }
 
-function canvasPoint(event) {
-  const rect = canvas.getBoundingClientRect();
-  const x = ((event.clientX - rect.left) / rect.width) * canvas.width;
-  const y = ((event.clientY - rect.top) / rect.height) * canvas.height;
-  return { x, y };
-}
+function drawSkyline(c, w, h) {
+  // Neon-lit downtown silhouette across the horizon with lit windows.
+  const horizon = h * 0.60;
+  const buildings = 14;
+  const bw = w / buildings;
+  const seed = 42;
+  let s = seed;
+  const rnd = () => { s = (s * 1103515245 + 12345) & 0x7fffffff; return s / 0x7fffffff; };
 
-function panelAt(point) {
-  const s = size();
-  const margin = Math.round(s.w * 0.05);
-  const { cols, rows } = panelGrid(s.w, s.h);
-  const gap = Math.max(6, Math.round(s.w * 0.012));
-  const gridBottom = Math.round(s.h * 0.615);
-  const pw = Math.floor((s.w - 2 * margin - gap * (cols - 1)) / cols);
-  const ph = Math.floor((gridBottom - margin - gap * (rows - 1)) / rows);
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const x = margin + c * (pw + gap);
-      const y = margin + r * (ph + gap);
-      if (point.x >= x && point.x <= x + pw && point.y >= y && point.y <= y + ph) {
-        return r * cols + c;
+  for (let i = 0; i < buildings; i++) {
+    const bh = (h * 0.06) + rnd() * (h * 0.16);
+    const x = i * bw;
+    const y = horizon - bh;
+    c.fillStyle = '#0a1a22';
+    c.fillRect(x, y, bw - 2, bh + h * 0.2);
+    // rim light
+    c.fillStyle = 'rgba(255, 80, 140, 0.55)';
+    c.fillRect(x, y, bw - 2, 2);
+    // windows
+    c.fillStyle = 'rgba(255, 214, 120, 0.75)';
+    const cols = 3, rows = Math.max(2, Math.floor(bh / 22));
+    for (let rr = 0; rr < rows; rr++) {
+      for (let cc = 0; cc < cols; cc++) {
+        if (rnd() < 0.45) continue;
+        c.fillRect(x + 6 + cc * (bw - 14) / cols, y + 8 + rr * 18, 5, 7);
       }
     }
   }
-  return -1;
+  // ground band
+  const ground = c.createLinearGradient(0, horizon, 0, h);
+  ground.addColorStop(0, '#12333c');
+  ground.addColorStop(1, '#061218');
+  c.fillStyle = ground;
+  c.fillRect(0, horizon + h * 0.18, w, h);
+
+  // palms flanking the scene
+  const palmColor = '#071016';
+  drawPalm(c, w * 0.08, h * 0.80, Math.min(w, h) / 420, palmColor);
+  drawPalm(c, w * 0.93, h * 0.78, Math.min(w, h) / 380, palmColor);
+  drawPalm(c, w * 0.20, h * 0.86, Math.min(w, h) / 560, palmColor);
 }
 
-function setupCanvasInteraction() {
-  let dragging = false;
-  let dragPanel = -1;
-  let start = null;
-
-  canvas.addEventListener('pointerdown', (event) => {
-    const point = canvasPoint(event);
-    const index = panelAt(point);
-    if (index < 0) return;
-    state.selected = index;
-    dragging = true;
-    dragPanel = index;
-    start = { x: event.clientX, y: event.clientY, ox: state.panels[index].ox, oy: state.panels[index].oy };
-    canvas.setPointerCapture(event.pointerId);
-    render();
-  });
-
-  canvas.addEventListener('pointermove', (event) => {
-    if (!dragging || dragPanel < 0 || !start) return;
-    const panel = state.panels[dragPanel];
-    if (!panel || !panel.img) return;
-    const rect = canvas.getBoundingClientRect();
-    const scale = canvas.width / rect.width;
-    const dx = (event.clientX - start.x) * scale;
-    const dy = (event.clientY - start.y) * scale;
-    // convert pixel movement into the panel's normalized offset range
-    const s = size();
-    const margin = Math.round(s.w * 0.05);
-    const { cols, rows } = panelGrid(s.w, s.h);
-    const gap = Math.max(6, Math.round(s.w * 0.012));
-    const gridBottom = Math.round(s.h * 0.615);
-    const pw = Math.floor((s.w - 2 * margin - gap * (cols - 1)) / cols);
-    const ph = Math.floor((gridBottom - margin - gap * (rows - 1)) / rows);
-    const b = Math.max(3, Math.round(pw * 0.017));
-    const iw = pw - 2 * b;
-    const ih = ph - 2 * b;
-    const fit = Math.max(iw / panel.img.naturalWidth, ih / panel.img.naturalHeight) * panel.zoom;
-    const overX = Math.max(0, panel.img.naturalWidth * fit - iw);
-    const overY = Math.max(0, panel.img.naturalHeight * fit - ih);
-    if (overX > 0) panel.ox = clamp(start.ox + (dx * 2) / overX, -1, 1);
-    if (overY > 0) panel.oy = clamp(start.oy + (dy * 2) / overY, -1, 1);
-    render();
-  });
-
-  canvas.addEventListener('pointerup', () => {
-    dragging = false;
-    dragPanel = -1;
-    start = null;
-  });
-
-  canvas.addEventListener('wheel', (event) => {
-    const panel = state.panels[state.selected];
-    if (!panel || !panel.img) return;
-    event.preventDefault();
-    const factor = event.deltaY < 0 ? 1.07 : 0.93;
-    panel.zoom = clamp(panel.zoom * factor, 1, 5);
-    render();
-  }, { passive: false });
+// ---------------------------------------------------------------------------
+// Photo grid
+// ---------------------------------------------------------------------------
+function layoutPhotos(n, w, h) {
+  // Choose a grid that fits the frame; GTA covers stack 3 columns.
+  const cols = n <= 1 ? 1 : n <= 4 ? 2 : 3;
+  const rows = Math.ceil(n / cols);
+  const pad = w * 0.045;
+  const areaW = w - pad * 2;
+  const areaH = h * 0.52;
+  const gap = w * 0.02;
+  const cw = (areaW - gap * (cols - 1)) / cols;
+  const ch = (areaH - gap * (rows - 1)) / rows;
+  const cells = [];
+  for (let i = 0; i < n; i++) {
+    const r = Math.floor(i / cols), c = i % cols;
+    cells.push({
+      x: pad + c * (cw + gap),
+      y: h * 0.30 + r * (ch + gap),
+      w: cw, h: ch,
+    });
+  }
+  return cells;
 }
 
-function clamp(value, lo, hi) {
-  return Math.min(hi, Math.max(lo, value));
+function drawPhoto(c, img, cell, radius) {
+  c.save();
+  // white border, rounded rect (GTA cover panel look)
+  const b = cell.w * 0.028;
+  c.beginPath();
+  c.roundRect(cell.x, cell.y, cell.w, cell.h, radius);
+  c.fillStyle = '#f5f7fa';
+  c.fill();
+  c.clip();
+
+  // cover-fit the image inside the inner rect
+  const ix = cell.x + b, iy = cell.y + b;
+  const iw = cell.w - b * 2, ih = cell.h - b * 2;
+  if (img) {
+    const ir = img.width / img.height;
+    const cr = iw / ih;
+    let dw, dh;
+    if (ir > cr) { dh = ih; dw = ih * ir; } else { dw = iw; dh = iw / ir; }
+    c.drawImage(img, ix + (iw - dw) / 2, iy + (ih - dh) / 2, dw, dh);
+  } else {
+    c.fillStyle = '#22293a';
+    c.fillRect(ix, iy, iw, ih);
+  }
+  c.restore();
+
+  // subtle inner shadow line
+  c.save();
+  c.beginPath();
+  c.roundRect(cell.x, cell.y, cell.w, cell.h, radius);
+  c.strokeStyle = 'rgba(0,0,0,0.25)';
+  c.lineWidth = 2;
+  c.stroke();
+  c.restore();
 }
 
-function setupControls() {
-  photoInput.addEventListener('change', (event) => {
-    const input = event.target;
-    if (input.files && input.files.length) onPhotosPicked([...input.files]);
-    input.value = '';
-  });
-  document.getElementById('fill-all').addEventListener('click', fillAllPanels);
-  document.getElementById('clear-panel').addEventListener('click', () => {
-    const panel = state.panels[state.selected];
-    if (panel) {
-      panel.img = null;
-      panel.zoom = 1;
-      panel.ox = 0;
-      panel.oy = 0;
-      status.textContent = `Panel ${state.selected + 1} cleared`;
-      render();
-    }
-  });
-  zoomInput.addEventListener('input', () => {
-    const panel = state.panels[state.selected];
-    if (!panel) return;
-    panel.zoom = clamp(Number(zoomInput.value) / 100, 1, 5);
-    zoomLabel.textContent = `${zoomInput.value}%`;
-    render();
-  });
-  captionInput.addEventListener('input', () => {
-    state.caption = captionInput.value;
-    render();
-  });
-  for (const slider of ['grain', 'grade', 'scan']) {
-    const input = document.getElementById(slider);
-    const label = document.getElementById(`${slider}-label`);
-    input.addEventListener('input', () => {
-      state.style[slider] = Number(input.value) / 100;
-      label.textContent = `${input.value}%`;
+// ---------------------------------------------------------------------------
+// Caption
+// ---------------------------------------------------------------------------
+function drawCaption(c, w, h, text) {
+  if (!text) return;
+  const letters = text.toUpperCase();
+  const base = Math.max(w, h) * 0.105;
+  const maxWidth = w * 0.9;
+  let fontSize = base;
+  c.save();
+  c.font = `900 ${fontSize}px "Arial Black", "Arial", sans-serif`;
+  while (c.measureText(letters).width > maxWidth && fontSize > 10) {
+    fontSize -= 2;
+    c.font = `900 ${fontSize}px "Arial Black", "Arial", sans-serif`;
+  }
+  c.textAlign = 'center';
+  c.textBaseline = 'middle';
+  const cx = w / 2;
+  const cy = h * 0.845;
+
+  // shadow
+  c.fillStyle = 'rgba(0,0,0,0.55)';
+  c.fillText(letters, cx + fontSize * 0.05, cy + fontSize * 0.07);
+
+  // stroke
+  c.lineWidth = fontSize * 0.11;
+  c.lineJoin = 'round';
+  c.strokeStyle = '#0a0f16';
+  c.strokeText(letters, cx, cy);
+
+  // fill: neon pink → amber gradient
+  const grad = c.createLinearGradient(0, cy - fontSize / 2, 0, cy + fontSize / 2);
+  grad.addColorStop(0, '#ff5fa2');
+  grad.addColorStop(0.5, '#ff2d95');
+  grad.addColorStop(1, '#ffb347');
+  c.fillStyle = grad;
+  c.fillText(letters, cx, cy);
+  c.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Grade: split-tone, scanlines, vignette
+// ---------------------------------------------------------------------------
+function drawGrade(c, w, h) {
+  c.save();
+
+  // split-tone: teal into shadows, warm into highlights
+  c.globalCompositeOperation = 'soft-light';
+  const cool = c.createLinearGradient(0, 0, 0, h);
+  cool.addColorStop(0, 'rgba(0, 120, 160, 0.55)');
+  cool.addColorStop(0.55, 'rgba(0, 120, 160, 0.08)');
+  cool.addColorStop(1, 'rgba(255, 120, 40, 0.0)');
+  c.fillStyle = cool;
+  c.fillRect(0, 0, w, h);
+
+  const warm = c.createLinearGradient(0, h * 0.4, 0, h);
+  warm.addColorStop(0, 'rgba(255, 140, 60, 0.0)');
+  warm.addColorStop(1, 'rgba(255, 140, 60, 0.40)');
+  c.fillStyle = warm;
+  c.fillRect(0, 0, w, h);
+
+  // scanlines
+  c.globalCompositeOperation = 'multiply';
+  const step = Math.max(2, Math.round(h / 540));
+  for (let y = 0; y < h; y += step * 2) {
+    c.fillStyle = 'rgba(0, 0, 0, 0.10)';
+    c.fillRect(0, y, w, step);
+  }
+
+  // vignette
+  c.globalCompositeOperation = 'source-over';
+  const vig = c.createRadialGradient(w / 2, h / 2, Math.min(w, h) * 0.34, w / 2, h / 2, Math.max(w, h) * 0.78);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.42)');
+  c.fillStyle = vig;
+  c.fillRect(0, 0, w, h);
+
+  c.restore();
+}
+
+// ---------------------------------------------------------------------------
+// Render
+// ---------------------------------------------------------------------------
+function render() {
+  const { w, h } = state;
+  if (canvas.width !== w || canvas.height !== h) {
+    canvas.width = w;
+    canvas.height = h;
+  }
+  ctx.clearRect(0, 0, w, h);
+
+  drawBackground(ctx, w, h);
+  drawSkyline(ctx, w, h);
+
+  const cells = layoutPhotos(state.photos.length, w, h);
+  const radius = w * 0.018;
+  state.photos.forEach((img, i) => drawPhoto(ctx, img, cells[i], radius));
+
+  drawCaption(ctx, w, h, state.caption);
+  drawGrade(ctx, w, h);
+}
+
+// ---------------------------------------------------------------------------
+// Editor wiring
+// ---------------------------------------------------------------------------
+function wireEditor() {
+  const input = document.getElementById('photo-input');
+  const sampleBtn = document.getElementById('sample-btn');
+  const captionEl = document.getElementById('caption');
+  const sizeBtns = document.getElementById('size-buttons');
+  const exportBtn = document.getElementById('export-btn');
+
+  if (input) {
+    input.addEventListener('change', () => {
+      const files = Array.from(input.files || []);
+      files.slice(0, 9).forEach((file) => {
+        const url = URL.createObjectURL(file);
+        const img = new Image();
+        img.onload = () => { state.photos.push(img); updatePhotoCount(); render(); };
+        img.src = url;
+      });
+    });
+  }
+  if (sampleBtn) sampleBtn.addEventListener('click', loadSamples);
+
+  if (captionEl) {
+    captionEl.value = state.caption;
+    captionEl.addEventListener('input', () => {
+      state.caption = captionEl.value;
       render();
     });
   }
-  sizeBar.addEventListener('click', (event) => {
-    const button = event.target.closest('button[data-size]');
-    if (!button) return;
-    state.sizeIndex = Number(button.dataset.size);
-    [...sizeBar.children].forEach((child, i) => {
-      child.classList.toggle('on', i === state.sizeIndex);
+
+  if (sizeBtns) {
+    sizeBtns.addEventListener('click', (e) => {
+      const btn = e.target.closest('button[data-w]');
+      if (!btn) return;
+      for (const b of sizeBtns.querySelectorAll('button')) b.classList.remove('active');
+      btn.classList.add('active');
+      state.w = Number(btn.dataset.w);
+      state.h = Number(btn.dataset.h);
+      render();
     });
-    initPanels(state.panels);
-    status.textContent = `${size().name} ${size().w} x ${size().h}`;
-    render();
-  });
-  exportButton.addEventListener('click', exportPng);
+  }
+
+  if (exportBtn) exportBtn.addEventListener('click', exportCover);
 }
 
-function exportPng() {
-  const s = size();
-  const offscreen = document.createElement('canvas');
-  offscreen.width = s.w;
-  offscreen.height = s.h;
-  drawCover(offscreen, state);
-  offscreen.toBlob((blob) => {
-    if (!blob) {
-      status.textContent = 'Export failed';
-      return;
-    }
+function exportCover() {
+  canvas.toBlob((blob) => {
+    if (!blob) return;
+    const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `vice-grid-${s.w}x${s.h}.png`;
+    a.href = url;
+    a.download = `cover-${state.w}x${state.h}.png`;
+    document.body.appendChild(a);
     a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    status.textContent = `Saved ${a.download}`;
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
   }, 'image/png');
 }
 
-/** Applies a preset scene (used by the screenshot deep links). */
-export function applyPreset({ imgs, caption, w, h }) {
-  const match = SIZES.findIndex((s) => s.w === w && s.h === h);
-  state.sizeIndex = match >= 0 ? match : 0;
-  state.caption = caption;
-  captionInput.value = caption;
-  initPanels(null);
-  state.panels.forEach((panel, i) => {
-    panel.img = imgs[i % imgs.length] || null;
-    panel.zoom = 1;
-    panel.ox = 0;
-    panel.oy = 0;
-  });
-  state.selected = 0;
-  render();
+// ---------------------------------------------------------------------------
+// Boot
+// ---------------------------------------------------------------------------
+applyShotMode();
+wireEditor();
+render();
+
+if (shot === 'cover' || shot === 'square' || shot === 'portrait') {
+  loadSamples().then(() => render());
 }
 
-function initEditor() {
-  initPanels(null);
-  setupControls();
-  setupCanvasInteraction();
-  render();
-}
-
-const params = new URLSearchParams(location.search);
-const shot = params.get('shot');
-if (shot) {
-  initPanels(null);
-  setupControls();
-  setupCanvasInteraction();
-  runShot(shot, params, { loadImage, applyPreset });
-} else {
-  initEditor();
-}
+export { render, exportCover, state };
