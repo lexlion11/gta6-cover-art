@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VICE GRID — Sunset Cover Art Maker</title>
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">VICE&nbsp;GRID <span>sunset cover art maker</span></div>
+  <div class="topbar-actions">
+    <div id="size-bar" class="size-bar" aria-label="Post size">
+      <button type="button" data-size="0" class="on">1080&times;1080</button>
+      <button type="button" data-size="1">1080&times;1350</button>
+      <button type="button" data-size="2">1920&times;1080</button>
+    </div>
+    <button id="export" type="button" class="primary">Export PNG</button>
+  </div>
+</header>
+<main class="layout">
+  <aside class="panel">
+    <section>
+      <h2>1 · Photos</h2>
+      <p class="hint">From your own machine — nothing is uploaded.</p>
+      <label class="file-drop">
+        <input id="photo" type="file" accept="image/*" multiple>
+        <span>Choose photos…</span>
+      </label>
+      <div id="photo-list" class="photo-list" aria-label="Loaded photos"></div>
+      <button id="fill-all" type="button" class="ghost" disabled>Fill all panels with the picked photo</button>
+    </section>
+    <section>
+      <h2>2 · Panels</h2>
+      <p class="hint">Click a panel on the poster or here to select it; drag the poster to reposition its photo, scroll to zoom.</p>
+      <div id="panel-chips" class="panel-chips" aria-label="Panels"></div>
+      <label class="slider">
+        <span>Zoom <b id="zoom-label">100%</b></span>
+        <input id="zoom" type="range" min="100" max="500" value="100">
+      </label>
+      <button id="clear-panel" type="button" class="ghost">Clear selected panel</button>
+    </section>
+    <section>
+      <h2>3 · Caption</h2>
+      <label class="field">
+        <span>Caption</span>
+        <input id="caption" type="text" maxlength="32" value="SUNSET HEIST" placeholder="SUNSET HEIST">
+      </label>
+    </section>
+    <section>
+      <h2>4 · Look</h2>
+      <label class="slider">
+        <span>Colour grade <b id="grade-label">70%</b></span>
+        <input id="grade" type="range" min="0" max="100" value="70">
+      </label>
+      <label class="slider">
+        <span>Scanlines <b id="scan-label">50%</b></span>
+        <input id="scan" type="range" min="0" max="100" value="50">
+      </label>
+      <label class="slider">
+        <span>Film grain <b id="grain-label">60%</b></span>
+        <input id="grain" type="range" min="0" max="100" value="60">
+      </label>
+    </section>
+    <p id="status" role="status" class="status"></p>
+  </aside>
+  <section class="stage">
+    <canvas id="cover" width="1080" height="1080" aria-label="The cover"></canvas>
+  </section>
+</main>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
